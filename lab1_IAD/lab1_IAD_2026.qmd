@@ -1,0 +1,134 @@
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+```
+
+# Індивідуальне завдання
+
+Для виконання лабораторної роботи використано набір даних `penguins` із пакета `palmerpenguins`.
+
+Мета роботи — створити відтворюваний Data Science-проєкт, отримати та імпортувати набір даних, провести його первинний аудит, виконати програмну підготовку даних, зберегти оброблений набір та побудувати контрольну візуалізацію.
+
+У межах роботи необхідно: - організувати структуру проєкту; - отримати та зберегти вихідні дані; - імпортувати дані засобами R; - перевірити розмірність, типи змінних, пропущені значення та дублікати; - виконати щонайменше три операції підготовки даних; - зберегти підготовлений набір даних; - побудувати контрольну візуалізацію; - створити `README.md` з описом проєкту та інструкцією його відтворення.
+
+```{r}
+library(readr)
+
+penguins_raw <- read_csv(
+  "data/raw/penguins.csv",
+  show_col_types = FALSE
+)
+
+penguins_raw
+```
+
+## Первинний аудит даних
+
+### Розмірність набору даних
+
+Набір даних містить:
+
+```{r}
+dim(penguins_raw)
+
+```
+
+```{r}
+str(penguins_raw)
+```
+
+### Пропущені значення
+
+```{r}
+missing_summary <- penguins_raw |>
+  summarise(across(everything(), ~sum(is.na(.x)))) |>
+  tidyr::pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "n_missing"
+  ) |>
+  arrange(desc(n_missing))
+
+knitr::kable(missing_summary)
+```
+
+### Дублікати
+
+```{r}
+sum(duplicated(penguins_raw))
+```
+
+### Опис числових змінних
+
+```{r}
+summary(penguins_raw)
+```
+
+## Підготовка даних
+
+Для підготовки даних виконано чотири операції: вибір необхідних змінних, видалення рядків із пропущеними значеннями, створення додаткової змінної маси тіла в кілограмах та перетворення категоріальних змінних у фактори.
+
+```{r}
+penguins_clean <- penguins_raw |>
+  select(
+    species,
+    island,
+    bill_length_mm,
+    bill_depth_mm,
+    flipper_length_mm,
+    body_mass_g,
+    sex
+  ) |>
+  filter(
+    !is.na(species),
+    !is.na(bill_length_mm),
+    !is.na(bill_depth_mm),
+    !is.na(flipper_length_mm),
+    !is.na(body_mass_g),
+    !is.na(sex)
+  ) |>
+  mutate(
+    body_mass_kg = body_mass_g / 1000,
+    species = factor(species),
+    island = factor(island),
+    sex = factor(sex)
+  )
+
+penguins_clean
+```
+
+## Збереження підготовлених даних
+
+```{r}
+write_csv(
+  penguins_clean,
+  "data/processed/penguins_clean.csv",
+  na = ""
+)
+```
+
+## Контрольна візуалізація
+
+Для контролю підготовлених даних побудовано діаграму залежності маси тіла пінгвінів від довжини ласта з розподілом за видами.
+
+```{r}
+ggplot(
+  penguins_clean,
+  aes(
+    x = flipper_length_mm,
+    y = body_mass_kg,
+    shape = species
+  )
+) +
+  geom_point(size = 2.5) +
+  labs(
+    title = "Залежність маси тіла від довжини ласта",
+    x = "Довжина ласта, мм",
+    y = "Маса тіла, кг",
+    shape = "Вид"
+  ) +
+  theme_minimal()
+```
