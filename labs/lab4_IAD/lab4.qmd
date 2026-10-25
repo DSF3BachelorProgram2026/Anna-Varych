@@ -1,0 +1,325 @@
+---
+title: "Лабораторна робота № 4"
+author: "Anna Varych"
+format: html
+editor: visual
+---
+
+# Мета роботи
+
+Опанувати метод головних компонент (PCA) для зниження розмірності демографічних даних штатів США, дослідити зв'язки між показниками та визначити частку поясненої дисперсії.
+
+## Крок 1. Завантаження даних
+
+Для прикладу використаємо вбудований набір `state.x77`, що містить показники 50 штатів США.
+
+```{r}
+library(tidyverse)
+
+data("state.x77")
+
+states <- as.data.frame(state.x77) |>
+  rownames_to_column("state")
+
+head(states)
+```
+
+## Крок 2. Підготовка та перевірка даних
+
+Виберемо числові показники штатів США для подальшого аналізу.
+
+```{r}
+features <- states |>
+  transmute(
+    state,
+    Population,
+    Income,
+    Illiteracy,
+    Life_Expectancy = `Life Exp`,
+    Murder_Rate = Murder,
+    High_School_Graduation = `HS Grad`,
+    Frost,
+    Area
+  )
+
+summary(features)
+```
+
+Перевіримо наявність пропущених значень і дублікатів.
+
+```{r}
+X <- features |>
+  select(-state) |>
+  as.matrix()
+
+cat("Кількість штатів:", nrow(X), "\n")
+cat("Кількість показників:", ncol(X), "\n")
+cat("Пропущені значення:", sum(is.na(X)), "\n")
+cat("Дублікати назв штатів:", anyDuplicated(features$state), "\n")
+```
+
+Отримані результати дають змогу оцінити повноту даних і підготувати їх до статистичного аналізу.
+
+## Крок 3. Аналіз показників штатів США
+
+Побудуємо діаграми розподілу показників і перевіримо взаємозв'язки між ними.
+
+```{r}
+features |>
+  select(-state) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "Показник",
+    values_to = "Значення"
+  ) |>
+  ggplot(aes(x = Значення)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "white") +
+  facet_wrap(~Показник, scales = "free") +
+  theme_minimal() +
+  labs(
+    title = "Розподіл показників штатів США",
+    x = "Значення",
+    y = "Кількість"
+  )
+```
+
+Обчислимо кореляційну матрицю числових показників.
+
+```{r}
+cor_matrix <- cor(X)
+round(cor_matrix, 2)
+```
+
+Кореляційна матриця показує силу та напрямок лінійного зв'язку між показниками. Вона допомагає визначити, які змінні можуть містити подібну інформацію.
+
+## Крок 4. Виконання PCA
+
+Виконаємо метод головних компонент зі стандартизацією показників.
+
+```{r}
+pca <- prcomp(X, center = TRUE, scale. = TRUE)
+
+summary(pca)
+```
+
+Обчислимо частку поясненої дисперсії для кожної компоненти.
+
+```{r}
+eigenvalues <- pca$sdev^2
+
+variance_table <- data.frame(
+  Component = paste0("PC", seq_along(eigenvalues)),
+  Eigenvalue = eigenvalues,
+  Explained_Variance = eigenvalues / sum(eigenvalues),
+  Cumulative_Variance = cumsum(eigenvalues / sum(eigenvalues))
+)
+
+variance_table[, 2:4] <- round(variance_table[, 2:4], 3)
+variance_table
+```
+
+PCA перетворює початкові показники на головні компоненти. Таблиця показує, яку частку загальної дисперсії пояснює кожна компонента та скільки інформації зберігається при їх послідовному додаванні.
+
+## Крок 5. Графік поясненої дисперсії
+
+Побудуємо графік, який показує частку дисперсії, пояснену кожною головною компонентою.
+
+```{r}
+variance_table |>
+  ggplot(aes(x = Component, y = Explained_Variance)) +
+  geom_col(fill = "steelblue") +
+  geom_line(aes(group = 1), color = "red") +
+  geom_point(color = "red", size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Пояснена дисперсія головних компонент",
+    x = "Головна компонента",
+    y = "Частка поясненої дисперсії"
+  )
+```
+
+Визначимо кількість компонент, необхідну для пояснення щонайменше 80% дисперсії.
+
+```{r}
+k80 <- which(variance_table$Cumulative_Variance >= 0.80)[1]
+
+cat("Кількість компонент для пояснення 80% дисперсії:", k80, "\n")
+cat("Сумарна пояснена дисперсія:",
+    round(variance_table$Cumulative_Variance[k80], 3))
+```
+
+Графік допомагає оцінити внесок кожної компоненти. Кількість компонент для подальшого аналізу обирається з урахуванням необхідної частки збереженої інформації.
+
+## Крок 6. Аналіз навантажень головних компонент
+
+Навантаження показують, наскільки кожен початковий показник пов'язаний із головними компонентами.
+
+```{r}
+loadings <- as.data.frame(pca$rotation) |>
+  rownames_to_column("Feature")
+
+head(loadings)
+```
+
+Побудуємо графік навантажень для перших двох компонент.
+
+```{r}
+loadings |>
+  select(Feature, PC1, PC2) |>
+  pivot_longer(
+    cols = c(PC1, PC2),
+    names_to = "Component",
+    values_to = "Loading"
+  ) |>
+  ggplot(aes(x = Feature, y = Loading, fill = Component)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Навантаження перших двох головних компонент",
+    x = "Показник",
+    y = "Навантаження"
+  )
+```
+
+За графіком можна визначити показники, які мають найбільший вплив на перші дві компоненти.
+
+## Крок 7. Візуалізація штатів США
+
+Відобразимо штати США в просторі перших двох головних компонент.
+
+```{r}
+scores <- as.data.frame(pca$x[, 1:2]) |>
+  bind_cols(features |> select(state))
+
+ggplot(scores, aes(x = PC1, y = PC2, label = state)) +
+  geom_point(color = "steelblue", size = 2.5) +
+  geom_text(size = 2.5, nudge_y = 0.15, check_overlap = TRUE) +
+  theme_minimal() +
+  labs(
+    title = "Штати США у просторі головних компонент",
+    x = "Перша головна компонента (PC1)",
+    y = "Друга головна компонента (PC2)"
+  )
+```
+
+Штати, розташовані близько один до одного на графіку, мають подібні комбінації досліджуваних показників. Віддалені точки можуть вказувати на суттєві відмінності між штатами.
+
+## Крок 8. Порівняння методів масштабування
+
+Порівняємо PCA зі стандартизацією показників та без неї.
+
+```{r}
+pca_no_scale <- prcomp(X, center = TRUE, scale. = FALSE)
+
+comparison <- data.frame(
+  Component = paste0("PC", 1:3),
+  With_Scaling = (pca$sdev^2 / sum(pca$sdev^2))[1:3],
+  Without_Scaling = (pca_no_scale$sdev^2 /
+                       sum(pca_no_scale$sdev^2))[1:3]
+)
+
+comparison
+```
+
+Побудуємо порівняльний графік.
+
+```{r}
+comparison |>
+  pivot_longer(
+    cols = c(With_Scaling, Without_Scaling),
+    names_to = "Method",
+    values_to = "Explained_Variance"
+  ) |>
+  ggplot(aes(x = Component, y = Explained_Variance, fill = Method)) +
+  geom_col(position = "dodge") +
+  theme_minimal() +
+  labs(
+    title = "Порівняння PCA з масштабуванням і без нього",
+    x = "Компонента",
+    y = "Частка поясненої дисперсії",
+    fill = "Метод"
+  )
+```
+
+Без стандартизації показники з великими числовими значеннями можуть сильніше впливати на результат. Стандартизація робить внесок різних показників порівнюванішим.
+
+## Крок 9. Оцінювання похибки реконструкції
+
+Перевіримо, як змінюється похибка відновлення даних залежно від кількості використаних головних компонент.
+
+```{r}
+Z <- scale(X)
+
+reconstruction <- data.frame(
+  Components = 1:ncol(X),
+  MSE = sapply(1:ncol(X), function(k) {
+    scores_k <- pca$x[, 1:k, drop = FALSE]
+    loadings_k <- pca$rotation[, 1:k, drop = FALSE]
+    Z_hat <- scores_k %*% t(loadings_k)
+    mean((Z - Z_hat)^2)
+  })
+)
+
+reconstruction
+```
+
+Побудуємо графік похибки.
+
+```{r}
+ggplot(reconstruction, aes(x = Components, y = MSE)) +
+  geom_line(color = "steelblue") +
+  geom_point(size = 2, color = "red") +
+  theme_minimal() +
+  labs(
+    title = "Залежність похибки реконструкції від кількості компонент",
+    x = "Кількість компонент",
+    y = "Середньоквадратична похибка (MSE)"
+  )
+```
+
+Зі збільшенням кількості компонент похибка реконструкції зменшується, оскільки зберігається більше інформації про початкові дані.
+
+## Крок 10. Збереження результатів
+
+Збережемо таблиці з результатами PCA у форматі CSV для подальшого використання в проєкті.
+
+```{r}
+dir.create("results", showWarnings = FALSE)
+
+write.csv(
+  variance_table,
+  "results/pca_variance.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  loadings,
+  "results/pca_loadings.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  scores,
+  "results/pca_scores.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  reconstruction,
+  "results/pca_reconstruction.csv",
+  row.names = FALSE
+)
+
+cat("Результати збережено в папці results.")
+```
+
+Отримані файли містять пояснену дисперсію, навантаження компонент, координати штатів та похибку реконструкції.
+
+## Висновок
+
+Під час виконання лабораторної роботи було досліджено метод головних компонент (PCA) для зниження розмірності даних штатів США. Було завантажено та перевірено дані, сформовано матрицю числових показників і виконано стандартизацію ознак.
+
+За допомогою PCA отримано головні компоненти, проаналізовано частку поясненої дисперсії та навантаження показників. Побудовано графіки розподілу даних, поясненої дисперсії та розташування штатів у просторі перших двох компонент. Також порівняно результати зі стандартизацією та без неї й досліджено похибку реконструкції.
+
+У результаті роботи було закріплено навички застосування PCA в R для аналізу багатовимірних даних. Метод дає змогу спростити представлення показників і виявити основні закономірності, водночас зменшення кількості компонент може призводити до втрати частини інформації.
