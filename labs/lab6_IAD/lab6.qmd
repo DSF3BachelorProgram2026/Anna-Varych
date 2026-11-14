@@ -1,0 +1,372 @@
+---
+title: "Лабораторна робота № 6. Побудова та дослідження регресійних моделей"
+subtitle: "Індивідуальне завдання. Варіант 3"
+author: "Анна Варич"
+date: today
+date-format: long
+lang: uk
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: false
+    df-print: paged
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## Мета роботи
+
+Побудувати та дослідити модель парної лінійної регресії залежності концентрації глюкози в крові від рівня двогодинного сироваткового інсуліну на основі набору даних `PimaIndiansDiabetes`. Проаналізувати структуру даних, оцінити параметри регресійної моделі, перевірити її припущення, дослідити впливові спостереження та порівняти прогнозну якість лінійної регресії з базовою моделлю та алгоритмом Random Forest.
+
+## **Індивідуальне завдання**
+
+**Варіант 3.** Побудувати модель парної регресії залежності концентрації глюкози в крові (`glucose`) від рівня двогодинного сироваткового інсуліну (`insulin`).
+
+Для дослідження використовується набір даних `SynthDiabetes2` із пакета `mlbench`. Набір містить 768 спостережень і 9 змінних. Він є синтетичним набором даних, який використовується як альтернатива початковому набору Pima Indians Diabetes.
+
+У роботі цільовою змінною є `glucose`, а незалежною змінною — `insulin`. Дослідження проводиться для всієї доступної сукупності спостережень без поділу на окремі категоріальні групи.
+
+## **1. Підготовка середовища**
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(mlbench)
+library(ranger)
+
+set.seed(12345)
+```
+
+## 2. Завантаження та первинний аналіз даних
+
+```{r}
+#| label: load-data
+
+data("SynthDiabetes2", package = "mlbench")
+
+diabetes_orig <- as_tibble(SynthDiabetes2)
+
+# Структура набору даних
+glimpse(diabetes_orig)
+
+# Розмір набору даних
+dim(diabetes_orig)
+
+# Основні статистичні характеристики
+summary(diabetes_orig)
+```
+
+## 3. Перевірка якості даних
+
+```{r}
+#| label: data-quality
+
+diabetes_orig |>
+  summarise(
+    total_observations = n(),
+    glucose_missing = sum(is.na(glucose)),
+    insulin_missing = sum(is.na(insulin)),
+    glucose_zero = sum(glucose == 0, na.rm = TRUE),
+    insulin_zero = sum(insulin == 0, na.rm = TRUE)
+  )
+```
+
+## 4. Підготовка даних для моделювання
+
+```{r}
+#| label: data-preparation
+
+diabetes <- diabetes_orig |>
+  select(glucose, insulin) |>
+  drop_na()
+
+# Перевірка підготовлених даних
+glimpse(diabetes)
+
+# Кількість спостережень після очищення
+nrow(diabetes)
+
+# Перевірка пропущених значень
+sum(is.na(diabetes))
+```
+
+## 5. Описова статистика
+
+```{r}
+#| label: descriptive-statistics
+
+summary(diabetes)
+
+diabetes |>
+  summarise(
+    glucose_mean = mean(glucose),
+    glucose_sd = sd(glucose),
+    glucose_min = min(glucose),
+    glucose_max = max(glucose),
+    insulin_mean = mean(insulin),
+    insulin_sd = sd(insulin),
+    insulin_min = min(insulin),
+    insulin_max = max(insulin)
+  )
+```
+
+## 6. Візуальний аналіз залежності змінних
+
+```{r}
+#| label: scatter-plot
+
+ggplot(diabetes, aes(x = insulin, y = glucose)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Залежність рівня глюкози від рівня інсуліну",
+    x = "Рівень інсуліну",
+    y = "Концентрація глюкози"
+  ) +
+  theme_minimal()
+```
+
+## 7. Кореляційний аналіз
+
+Для визначення сили та напряму лінійного зв'язку між рівнем інсуліну та концентрацією глюкози використаємо коефіцієнт кореляції Пірсона.
+
+```{r}
+#| label: correlation
+
+cor.test(diabetes$insulin, diabetes$glucose)
+```
+
+## 8. Побудова парної лінійної регресії
+
+```{r}
+#| label: linear-model
+
+model_lm <- lm(glucose ~ insulin, data = diabetes)
+
+# Результати регресійної моделі
+summary(model_lm)
+
+# Довірчі інтервали коефіцієнтів
+confint(model_lm)
+
+# Рівняння регресії
+coef(model_lm)
+```
+
+## 9. Візуалізація регресійної моделі
+
+```{r}
+#| label: regression-plot
+
+ggplot(diabetes, aes(x = insulin, y = glucose)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Лінійна регресійна модель",
+    x = "Рівень інсуліну",
+    y = "Концентрація глюкози"
+  ) +
+  theme_minimal()
+```
+
+## 10. Діагностика регресійної моделі
+
+Для оцінювання якості побудованої моделі проведемо аналіз залишків, перевіримо їхній розподіл та визначимо наявність впливових спостережень.
+
+### 10.1. Графічний аналіз залишків
+
+```{r}
+#| label: residual-diagnostics
+
+par(mfrow = c(2, 2))
+plot(model_lm)
+par(mfrow = c(1, 1))
+```
+
+### 10.2. Аналіз впливових спостережень
+
+```{r}
+#| label: influential-observations
+
+# Стандартизовані залишки
+student_res <- rstudent(model_lm)
+
+# Відстань Кука
+cook_dist <- cooks.distance(model_lm)
+
+# Важільні значення
+leverage <- hatvalues(model_lm)
+
+# Кількість потенційно впливових спостережень
+sum(abs(student_res) > 3)
+
+# Кількість спостережень з відстанню Кука понад 4/n
+sum(cook_dist > 4 / nrow(diabetes))
+
+# Максимальне значення відстані Кука
+max(cook_dist)
+```
+
+```{r}
+#| label: cooks-distance
+
+plot(
+  cook_dist,
+  type = "h",
+  main = "Відстань Кука",
+  xlab = "Номер спостереження",
+  ylab = "Відстань Кука"
+)
+
+abline(
+  h = 4 / nrow(diabetes),
+  col = "red",
+  lty = 2
+)
+```
+
+## 11. Порівняння прогнозної якості моделей
+
+### 11.1. Розподіл даних на навчальну та тестову вибірки
+
+```{r}
+#| label: train-test-split
+
+set.seed(12345)
+
+train_index <- sample(
+  seq_len(nrow(diabetes)),
+  size = floor(0.8 * nrow(diabetes))
+)
+
+train_data <- diabetes[train_index, ]
+test_data <- diabetes[-train_index, ]
+
+# Розмір вибірок
+nrow(train_data)
+nrow(test_data)
+```
+
+### 11.2. Побудова моделей
+
+```{r}
+#| label: comparison-models
+
+# Базова модель
+baseline_pred <- rep(
+  mean(train_data$glucose),
+  nrow(test_data)
+)
+
+# Лінійна регресія
+lm_comparison <- lm(glucose ~ insulin, data = train_data)
+
+lm_pred <- predict(
+  lm_comparison,
+  newdata = test_data
+)
+
+# Random Forest
+set.seed(12345)
+
+rf_model <- ranger(
+  glucose ~ insulin,
+  data = train_data,
+  num.trees = 500,
+  mtry = 1,
+  seed = 12345
+)
+
+rf_pred <- predict(
+  rf_model,
+  data = test_data
+)$predictions
+```
+
+### 11.3. Оцінювання прогнозної якості
+
+Для порівняння моделей використаємо середню абсолютну похибку (MAE), корінь із середньої квадратичної похибки (RMSE) та коефіцієнт детермінації (R²).
+
+```{r}
+#| label: model-metrics
+
+calculate_metrics <- function(actual, predicted) {
+  tibble(
+    MAE = mean(abs(actual - predicted)),
+    RMSE = sqrt(mean((actual - predicted)^2)),
+    R2 = 1 - sum((actual - predicted)^2) /
+      sum((actual - mean(actual))^2)
+  )
+}
+
+results <- bind_rows(
+  Baseline = calculate_metrics(
+    test_data$glucose, baseline_pred
+  ),
+  Linear_Regression = calculate_metrics(
+    test_data$glucose, lm_pred
+  ),
+  Random_Forest = calculate_metrics(
+    test_data$glucose, rf_pred
+  ),
+  .id = "Model"
+)
+
+results
+```
+
+## 12. Візуальне порівняння прогнозів моделей
+
+```{r}
+#| label: prediction-comparison
+
+predictions <- tibble(
+  Actual = test_data$glucose,
+  Baseline = baseline_pred,
+  Linear_Regression = lm_pred,
+  Random_Forest = rf_pred
+)
+
+predictions_long <- predictions |>
+  pivot_longer(
+    cols = -Actual,
+    names_to = "Model",
+    values_to = "Predicted"
+  )
+
+ggplot(predictions_long, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    color = "red",
+    linetype = "dashed"
+  ) +
+  facet_wrap(~ Model) +
+  labs(
+    title = "Порівняння фактичних і прогнозованих значень",
+    x = "Фактична концентрація глюкози",
+    y = "Прогнозована концентрація глюкози"
+  ) +
+  theme_minimal()
+```
+
+## **13. Загальні висновки**
+
+У ході лабораторної роботи було досліджено залежність концентрації глюкози в крові від рівня інсуліну на основі синтетичного набору даних `SynthDiabetes2`, який містить 768 початкових спостережень.
+
+Під час підготовки даних було відібрано спостереження з наявними значеннями обох досліджуваних змінних. За результатами кореляційного аналізу встановлено помірний позитивний зв'язок між рівнем інсуліну та концентрацією глюкози. Коефіцієнт кореляції Пірсона становить 0,5165.
+
+Було побудовано парну лінійну регресійну модель. Її коефіцієнти є статистично значущими, а коефіцієнт детермінації становить 0,2667. Це свідчить про те, що модель пояснює 26,67% варіації концентрації глюкози.
+
+Під час діагностики моделі не виявлено стандартизованих залишків, абсолютне значення яких перевищує 3. Водночас 11 спостережень мають відстань Кука більшу за порогове значення 4/n, що вказує на наявність потенційно впливових спостережень.
+
+Для порівняння прогнозної якості було використано базову модель, лінійну регресію та Random Forest. Найкращі результати на тестовій вибірці продемонструвала модель Random Forest: MAE = 22,30, RMSE = 29,62 та R² = 0,208.
+
+Отже, для досліджуваного набору даних Random Forest виявився найкращою серед розглянутих моделей за прогнозними метриками. Водночас усі моделі мають обмежену прогнозну здатність, тому для підвищення точності доцільно розглянути додаткові предиктори. Отримані результати характеризують лише досліджуваний синтетичний набір даних і не встановлюють причинно-наслідкового зв'язку між показниками.
