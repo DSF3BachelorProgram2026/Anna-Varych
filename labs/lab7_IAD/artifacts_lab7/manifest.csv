@@ -1,0 +1,2 @@
+model,dataset,observations,predictors,target,selected_model,r_version,tidymodels_version,model_file,md5
+Multinomial Logistic Regression,iris,150,"Sepal.Length, Sepal.Width, Petal.Length, Petal.Width",Species,Logistic Regression,4.6.2,1.5.0,artifacts_lab7/iris_multinom_model.rds,cea20728020e4ad526b3666df9ab5b8f

@@ -1,0 +1,253 @@
+---
+title: "Лабораторна робота № 7. Побудова моделей класифікації"
+subtitle: "Індивідуальне завдання. Варіант 3"
+author: "Анна Варич"
+date: today
+date-format: long
+lang: uk
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: false
+    df-print: paged
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## Мета роботи
+
+Метою лабораторної роботи є побудова та порівняння моделей багатокласової класифікації, оцінювання їхньої якості та збереження навченої моделі для подальшого використання.
+
+## 1. Підготовка середовища та даних
+
+Для дослідження використовується набір даних `iris`, який містить 150 спостережень трьох видів квіток. Цільовою змінною є `Species`, а предикторами — чотири числові характеристики квіток.
+
+```{r}
+#| label: setup
+
+library(tidymodels)
+library(tidyverse)
+library(nnet)
+library(ranger)
+
+set.seed(12345)
+
+iris_data <- as_tibble(iris)
+
+glimpse(iris_data)
+dim(iris_data)
+```
+
+## 2. Розбиття даних
+
+Дані поділяються на навчальну (80%) та тестову (20%) вибірки зі збереженням пропорцій усіх трьох класів. Для оцінювання моделей на навчальній вибірці використовується п'ятиблокова крос-валідація.
+
+```{r}
+#| label: data-split
+
+set.seed(12345)
+
+```
+
+```{data_split <- initial_split(iris_data, prop = 0.8, strata = Species)}
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+set.seed(12345)
+folds <- vfold_cv(train_data, v = 5, strata = Species)
+
+nrow(train_data)
+nrow(test_data)
+```
+
+## 3. Побудова моделей класифікації
+
+У межах індивідуального варіанта 3 побудуємо дві моделі: мультиноміальну логістичну регресію та випадковий ліс. Для обох моделей використовується однакова схема крос-валідації.
+
+```{r}
+#| label: model-fitting
+
+recipe_model <- recipe(Species ~ ., data = train_data) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+logit_spec <- multinom_reg() |>
+  set_engine("nnet", trace = FALSE) |>
+  set_mode("classification")
+
+forest_spec <- rand_forest(
+  trees = 300,
+  mtry = 2,
+  min_n = 5
+) |>
+  set_engine("ranger", seed = 12345) |>
+  set_mode("classification")
+
+logit_workflow <- workflow() |>
+  add_recipe(recipe_model) |>
+  add_model(logit_spec)
+
+forest_workflow <- workflow() |>
+  add_recipe(recipe_model) |>
+  add_model(forest_spec)
+```
+
+## 4. Навчання та крос-валідація моделей
+
+Для порівняння моделей використаємо п'ятиблокову крос-валідацію. Основними критеріями оцінювання будуть Accuracy та багатокласова ROC AUC.
+
+```{r}
+#| label: cross-validation
+
+metrics <- metric_set(accuracy, roc_auc)
+
+set.seed(12345)
+
+logit_cv <- fit_resamples(
+  logit_workflow,
+  resamples = folds,
+  metrics = metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+set.seed(12345)
+
+forest_cv <- fit_resamples(
+  forest_workflow,
+  resamples = folds,
+  metrics = metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+logit_results <- collect_metrics(logit_cv) |>
+  mutate(model = "Logistic Regression")
+
+forest_results <- collect_metrics(forest_cv) |>
+  mutate(model = "Random Forest")
+
+cv_results <- bind_rows(logit_results, forest_results)
+
+cv_results
+```
+
+## 5. Оцінювання найкращої моделі
+
+За результатами крос-валідації найкращою моделлю обрано мультиноміальну логістичну регресію. Проведемо її фінальне оцінювання на тестовій вибірці, яка не використовувалася під час навчання та вибору моделі.
+
+```{r}
+#| label: final-model
+
+final_model <- fit(logit_workflow, data = train_data)
+
+test_predictions <- bind_cols(
+  test_data |> select(Species),
+  predict(final_model, new_data = test_data, type = "class"),
+  predict(final_model, new_data = test_data, type = "prob")
+)
+
+accuracy(test_predictions, truth = Species, estimate = .pred_class)
+
+roc_auc(
+  test_predictions,
+  truth = Species,
+  .pred_setosa,
+  .pred_versicolor,
+  .pred_virginica,
+  estimator = "hand_till"
+)
+
+conf_mat(test_predictions, truth = Species, estimate = .pred_class)
+```
+
+## 6. Збереження навченої моделі
+
+Навчену модель мультиноміальної логістичної регресії збережемо у форматі RDS для подальшого використання та відновлення.
+
+```{r}
+#| label: save-model
+
+artifact_dir <- "artifacts_lab7"
+dir.create(artifact_dir, showWarnings = FALSE)
+
+model_path <- file.path(artifact_dir, "iris_multinom_model.rds")
+
+saveRDS(final_model, model_path)
+
+file.info(model_path)$size
+```
+
+## 7. Відновлення та перевірка моделі
+
+Завантажимо збережену модель із файлу RDS та перевіримо, чи збігаються прогнози відновленої моделі з прогнозами початкової моделі.
+
+```{r}
+#| label: restore-model
+
+restored_model <- readRDS(model_path)
+
+original_predictions <- predict(
+  final_model,
+  new_data = test_data,
+  type = "prob"
+)
+
+restored_predictions <- predict(
+  restored_model,
+  new_data = test_data,
+  type = "prob"
+)
+
+max(abs(
+  original_predictions - restored_predictions
+))
+
+identical(
+  predict(final_model, new_data = test_data)$.pred_class,
+  predict(restored_model, new_data = test_data)$.pred_class
+)
+```
+
+## 8. Маніфест та відтворюваність
+
+Для забезпечення відтворюваності створимо маніфест із характеристиками навченої моделі, версіями програмного середовища та контрольною сумою файлу.
+
+```{r}
+#| label: model-manifest
+
+manifest <- tibble(
+  model = "Multinomial Logistic Regression",
+  dataset = "iris",
+  observations = nrow(iris_data),
+  predictors = "Sepal.Length, Sepal.Width, Petal.Length, Petal.Width",
+  target = "Species",
+  selected_model = "Logistic Regression",
+  r_version = as.character(getRversion()),
+  tidymodels_version = as.character(packageVersion("tidymodels")),
+  model_file = model_path,
+  md5 = unname(tools::md5sum(model_path))
+)
+
+manifest
+
+write_csv(manifest, file.path(artifact_dir, "manifest.csv"))
+```
+
+## 9. Загальні висновки
+
+У ході лабораторної роботи було побудовано та досліджено моделі багатокласової класифікації на основі набору даних `iris`, який містить 150 спостережень трьох видів квіток.
+
+Для розв'язання задачі було використано мультиноміальну логістичну регресію та випадковий ліс. Для оцінювання моделей застосовано стратифіковану п'ятиблокову крос-валідацію.
+
+За результатами крос-валідації мультиноміальна логістична регресія показала кращі результати: Accuracy становить 0,9583, а ROC AUC — 0,9953. Для випадкового лісу відповідні показники становлять 0,9417 та 0,9938.
+
+Під час фінального оцінювання логістична регресія правильно класифікувала всі 30 об'єктів тестової вибірки. Точність класифікації становила 100%, помилок у матриці класифікації не виявлено.
+
+Навчену модель було збережено у форматі RDS, після чого виконано її відновлення. Перевірка підтвердила повну ідентичність прогнозів початкової та відновленої моделей.
+
+Отже, мету лабораторної роботи досягнуто: побудовано та порівняно дві моделі класифікації, обрано найкращу за результатами крос-валідації та перевірено можливість її повторного використання після збереження.
