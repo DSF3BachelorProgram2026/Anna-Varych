@@ -1,0 +1,658 @@
+---
+title: "Лабораторна робота № 9. Пошук та аналіз асоціативних правил"
+subtitle: "Індивідуальне завдання. Варіант 3"
+author: "Анна Варич"
+date: today
+date-format: long
+lang: uk
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## Мета роботи
+
+Метою лабораторної роботи є пошук асоціативних правил у транзакційних даних, оцінювання їхньої якості за показниками support, confidence та lift, а також дослідження впливу параметрів алгоритму Apriori на результати.
+
+## 1. Підготовка середовища та даних
+
+Для дослідження використовується набір транзакцій `Groceries` із пакета `arules`.
+
+```{r}
+#| label: setup
+
+if (!requireNamespace("arules", quietly = TRUE)) {
+  install.packages("arules")
+}
+
+library(arules)
+library(tidyverse)
+
+set.seed(12345)
+options(digits = 4)
+
+data("Groceries", package = "arules")
+tx <- Groceries
+
+n_tx <- length(tx)
+n_unique <- length(itemLabels(tx))
+basket_size <- size(tx)
+
+summary_table <- data.frame(
+  transactions = n_tx,
+  unique_items = n_unique,
+  mean_items = mean(basket_size),
+  median_items = median(basket_size),
+  min_items = min(basket_size),
+  max_items = max(basket_size)
+)
+
+summary_table
+```
+
+## 2. Аналіз частоти товарів
+
+```{r}
+#| label: frequencies
+
+frequencies <- sort(
+  itemFrequency(tx, type = "relative"),
+  decreasing = TRUE
+)
+
+head(round(frequencies, 4), 10)
+
+itemFrequencyPlot(
+  tx,
+  topN = 15,
+  type = "relative",
+  main = "Частота найпоширеніших товарів"
+)
+```
+
+## 3. Пошук частих наборів та асоціативних правил
+
+```{r}
+#| label: itemsets
+
+frequent_sets <- apriori(
+  tx,
+  parameter = list(
+    supp = 0.02,
+    minlen = 2,
+    target = "frequent itemsets"
+  ),
+  control = list(verbose = FALSE)
+)
+
+frequent_sets <- sort(
+  frequent_sets,
+  by = "support",
+  decreasing = TRUE
+)
+
+inspect(head(frequent_sets, 10))
+length(frequent_sets)
+```
+
+```{r}
+#| label: rules
+
+base_support <- 0.005
+base_confidence <- 0.30
+
+rules <- apriori(
+  tx,
+  parameter = list(
+    supp = base_support,
+    conf = base_confidence,
+    minlen = 2,
+    maxlen = 4,
+    target = "rules"
+  ),
+  control = list(verbose = FALSE)
+)
+
+rules <- sort(rules, by = "lift", decreasing = TRUE)
+
+quality_summary <- data.frame(
+  rules = length(rules),
+  median_support = median(quality(rules)$support),
+  median_confidence = median(quality(rules)$confidence),
+  median_lift = median(quality(rules)$lift)
+)
+
+quality_summary
+inspect(head(rules, 10))
+```
+
+Було побудовано асоціативні правила за допомогою алгоритму Apriori. Для пошуку встановлено мінімальну підтримку 0,005 та мінімальну достовірність 0,30. Отримані правила відсортовано за показником lift у порядку спадання. Проаналізовано десять правил із найвищим значенням lift.
+
+```{r}
+#| label: association-rules
+
+base_support <- 0.005
+base_confidence <- 0.30
+
+rules <- apriori(
+  tx,
+  parameter = list(
+    supp = base_support,
+    conf = base_confidence,
+    minlen = 2,
+    maxlen = 4,
+    target = "rules"
+  )
+)
+
+rules_sorted <- sort(rules, by = "lift", decreasing = TRUE)
+
+cat("Кількість знайдених правил:", length(rules), "\n")
+
+summary(rules)
+
+inspect(head(rules_sorted, 10))
+```
+
+## 5. Перевірка показників асоціативного правила
+
+Для перевірки правильності побудованого асоціативного правила було проаналізовано його основні характеристики: підтримку (support), достовірність (confidence) та показник lift. Додатково перевірено кількість транзакцій, у яких зустрічається відповідне правило.
+
+```{r}
+#| label: rule-metrics
+
+best_rule <- head(rules_sorted, 1)
+
+rule_quality <- quality(best_rule)
+
+rhs_items <- LIST(rhs(best_rule))[[1]]
+rhs_support <- itemFrequency(tx, type = "relative")[rhs_items]
+
+rule_check <- data.frame(
+  rule = labels(best_rule),
+  support = rule_quality$support,
+  confidence = rule_quality$confidence,
+  rhs_support = as.numeric(rhs_support),
+  lift = rule_quality$lift,
+  lift_recomputed = rule_quality$confidence / as.numeric(rhs_support),
+  transactions = round(rule_quality$support * length(tx))
+)
+
+rule_check
+```
+
+## 6. Дослідження впливу порогу support
+
+Було досліджено вплив мінімального порогу підтримки на кількість сформованих асоціативних правил. Для аналізу використано чотири значення support: 0,003; 0,005; 0,01 та 0,02. Результати представлено у вигляді таблиці та графіка.
+
+```{r}
+#| label: support-analysis
+
+support_values <- c(0.003, 0.005, 0.01, 0.02)
+
+support_results <- data.frame(
+  support = support_values,
+  rules_count = sapply(support_values, function(s) {
+    length(apriori(
+      tx,
+      parameter = list(
+        supp = s,
+        conf = base_confidence,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+support_results
+
+plot(
+  support_results$support,
+  support_results$rules_count,
+  type = "b",
+  xlab = "Мінімальна підтримка (support)",
+  ylab = "Кількість правил",
+  main = "Вплив порогу support на кількість правил"
+)
+```
+
+## 7. Дослідження впливу порогу confidence
+
+Для визначення впливу мінімального рівня достовірності було проведено експеримент із використанням чотирьох значень confidence: 0,2; 0,3; 0,4 та 0,5. Для кожного значення визначено кількість асоціативних правил. Результати порівняно за допомогою таблиці та графіка.
+
+```{r}
+#| label: confidence-analysis
+
+confidence_values <- c(0.2, 0.3, 0.4, 0.5)
+
+confidence_results <- data.frame(
+  confidence = confidence_values,
+  rules_count = sapply(confidence_values, function(c) {
+    length(apriori(
+      tx,
+      parameter = list(
+        supp = base_support,
+        conf = c,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+confidence_results
+
+plot(
+  confidence_results$confidence,
+  confidence_results$rules_count,
+  type = "b",
+  xlab = "Мінімальна достовірність (confidence)",
+  ylab = "Кількість правил",
+  main = "Вплив порогу confidence на кількість правил"
+)
+```
+
+## 8. Фільтрація та перевірка надлишковості правил
+
+Для відбору найбільш цікавих асоціативних правил застосовано додаткові умови: lift більше 1,5 та support не менше 0,01. Також виконано перевірку правил на надлишковість, щоб виключити правила, інформація яких дублюється іншими правилами.
+
+```{r}
+#| label: rules-filtering
+
+filtered_rules <- subset(
+  rules,
+  subset = lift > 1.5 & support >= 0.01
+)
+
+filtered_rules <- sort(
+  filtered_rules,
+  by = "lift",
+  decreasing = TRUE
+)
+
+cat("Кількість правил після фільтрації:",
+    length(filtered_rules), "\n")
+
+if (length(filtered_rules) > 0) {
+  inspect(head(filtered_rules, 10))
+
+  redundant_flags <- is.redundant(filtered_rules)
+
+  non_redundant_rules <- filtered_rules[!redundant_flags]
+
+  cat("Кількість надлишкових правил:",
+      sum(redundant_flags), "\n")
+
+  cat("Кількість правил після усунення надлишковості:",
+      length(non_redundant_rules), "\n")
+
+  inspect(head(non_redundant_rules, 10))
+} else {
+  non_redundant_rules <- filtered_rules
+  cat("За заданими умовами правил не знайдено.\n")
+}
+```
+
+## 9. Збереження результатів аналізу
+
+На завершальному етапі результати аналізу збережено у форматах CSV та RDS. Формат CSV дає змогу переглядати таблиці з результатами, а RDS дозволяє зберігати об'єкти R для подальшого використання та відновлення.
+
+```{r}
+#| label: save-results
+
+dir.create("results_lab9", showWarnings = FALSE)
+
+support_values <- c(0.003, 0.005, 0.01, 0.02)
+confidence_values <- c(0.2, 0.3, 0.4, 0.5)
+
+support_results <- data.frame(
+  support = support_values,
+  rules_count = sapply(support_values, function(s) {
+    length(apriori(
+      tx,
+      parameter = list(
+        supp = s,
+        conf = base_confidence,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+confidence_results <- data.frame(
+  confidence = confidence_values,
+  rules_count = sapply(confidence_values, function(c) {
+    length(apriori(
+      tx,
+      parameter = list(
+        supp = base_support,
+        conf = c,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+utils::write.csv(
+  support_results,
+  "results_lab9/support_results.csv",
+  row.names = FALSE
+)
+
+utils::write.csv(
+  confidence_results,
+  "results_lab9/confidence_results.csv",
+  row.names = FALSE
+)
+
+if (length(filtered_rules) > 0) {
+  utils::write.csv(
+    as(filtered_rules, "data.frame"),
+    "results_lab9/filtered_rules.csv",
+    row.names = FALSE
+  )
+}
+
+saveRDS(rules, "results_lab9/association_rules.rds")
+saveRDS(rules_sorted, "results_lab9/sorted_rules.rds")
+
+restored_rules <- readRDS(
+  "results_lab9/association_rules.rds"
+)
+
+cat("Початкова кількість правил:", length(rules), "\n")
+cat("Відновлена кількість правил:", length(restored_rules), "\n")
+cat("Результат перевірки:", identical(rules, restored_rules), "\n")
+```
+
+## 10. Індивідуальне завдання. Варіант 3
+
+Для індивідуального завдання обрано набір даних Groceries. Відповідно до третього варіанта використано першу половину транзакцій. Метою дослідження є аналіз асоціативних правил та визначення їхньої стійкості до зміни порогових значень support і confidence.
+
+```{r}
+#| label: variant-data
+
+variant_tx <- tx[seq_len(floor(length(tx) / 2))]
+
+variant_summary <- data.frame(
+  Показник = c(
+    "Кількість транзакцій",
+    "Кількість унікальних товарів",
+    "Середній розмір кошика",
+    "Медіанний розмір кошика",
+    "Мінімальний розмір кошика",
+    "Максимальний розмір кошика"
+  ),
+  Значення = c(
+    length(variant_tx),
+    length(itemLabels(variant_tx)),
+    mean(size(variant_tx)),
+    median(size(variant_tx)),
+    min(size(variant_tx)),
+    max(size(variant_tx))
+  )
+)
+
+variant_summary
+
+variant_frequencies <- sort(
+  itemFrequency(variant_tx),
+  decreasing = TRUE
+)
+
+top10_variant <- head(variant_frequencies, 10)
+
+top10_variant
+
+itemFrequencyPlot(
+  variant_tx,
+  topN = 10,
+  type = "absolute",
+  main = "Найпопулярніші товари у першій половині Groceries",
+  xlab = "Товари",
+  ylab = "Кількість транзакцій"
+)
+```
+
+## 11. Побудова та аналіз асоціативних правил для варіанта 3
+
+Для першої половини набору Groceries побудовано часті набори товарів та асоціативні правила за алгоритмом Apriori. Для пошуку використано мінімальну підтримку 0,005 і мінімальну достовірність 0,30. Правила відсортовано за показником lift. Додатково відібрано три правила для детальнішого аналізу.
+
+```{r}
+#| label: variant-rules
+
+variant_itemsets <- apriori(
+  variant_tx,
+  parameter = list(
+    supp = 0.02,
+    minlen = 2,
+    target = "frequent itemsets"
+  )
+)
+
+cat("Кількість частих наборів:",
+    length(variant_itemsets), "\n")
+
+inspect(head(sort(
+  variant_itemsets,
+  by = "support",
+  decreasing = TRUE
+), 10))
+
+variant_rules <- apriori(
+  variant_tx,
+  parameter = list(
+    supp = 0.005,
+    conf = 0.30,
+    minlen = 2,
+    maxlen = 4,
+    target = "rules"
+  )
+)
+
+variant_rules_sorted <- sort(
+  variant_rules,
+  by = "lift",
+  decreasing = TRUE
+)
+
+cat("Кількість асоціативних правил:",
+    length(variant_rules), "\n")
+
+inspect(head(variant_rules_sorted, 10))
+
+three_rules <- head(variant_rules_sorted, 3)
+
+three_rules_table <- data.frame(
+  Правило = labels(three_rules),
+  quality(three_rules),
+  Кількість_транзакцій = round(
+    quality(three_rules)$support * length(variant_tx)
+  )
+)
+
+three_rules_table
+```
+
+## 12. Дослідження стійкості правил до зміни порогів
+
+Для перевірки стійкості асоціативних правил досліджено вплив різних значень support і confidence. Також порівняно три способи відбору правил: за достовірністю, за показником lift та за сукупністю кількох показників. Виконано перевірку надлишковості отриманих правил.
+
+```{r}
+#| label: variant-stability
+
+variant_support_values <- c(0.003, 0.005, 0.01, 0.02)
+
+variant_support_results <- data.frame(
+  support = variant_support_values,
+  rules_count = sapply(variant_support_values, function(s) {
+    length(apriori(
+      variant_tx,
+      parameter = list(
+        supp = s,
+        conf = 0.30,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+variant_confidence_values <- c(0.2, 0.3, 0.4, 0.5)
+
+variant_confidence_results <- data.frame(
+  confidence = variant_confidence_values,
+  rules_count = sapply(variant_confidence_values, function(c) {
+    length(apriori(
+      variant_tx,
+      parameter = list(
+        supp = 0.005,
+        conf = c,
+        minlen = 2,
+        maxlen = 4,
+        target = "rules"
+      )
+    ))
+  })
+)
+
+variant_support_results
+variant_confidence_results
+
+plot(
+  variant_support_results$support,
+  variant_support_results$rules_count,
+  type = "b",
+  xlab = "Support",
+  ylab = "Кількість правил",
+  main = "Стійкість правил до зміни support"
+)
+
+plot(
+  variant_confidence_results$confidence,
+  variant_confidence_results$rules_count,
+  type = "b",
+  xlab = "Confidence",
+  ylab = "Кількість правил",
+  main = "Стійкість правил до зміни confidence"
+)
+
+variant_quality <- quality(variant_rules)
+
+by_confidence <- head(
+  sort(variant_rules, by = "confidence", decreasing = TRUE),
+  10
+)
+
+by_lift <- head(
+  sort(variant_rules, by = "lift", decreasing = TRUE),
+  10
+)
+
+combined_rules <- subset(
+  variant_rules,
+  subset = support >= 0.01 &
+    confidence >= 0.5 &
+    lift > 1.5
+)
+
+combined_rules <- sort(
+  combined_rules,
+  by = "lift",
+  decreasing = TRUE
+)
+
+cat("Відбір за confidence:", length(by_confidence), "\n")
+cat("Відбір за lift:", length(by_lift), "\n")
+cat("Комбінований відбір:", length(combined_rules), "\n")
+
+cat("Надлишкові правила за confidence:",
+    sum(is.redundant(by_confidence)), "\n")
+
+cat("Надлишкові правила за lift:",
+    sum(is.redundant(by_lift)), "\n")
+
+cat("Надлишкові правила у комбінованому відборі:",
+    sum(is.redundant(combined_rules)), "\n")
+
+inspect(head(by_confidence, 5))
+inspect(head(by_lift, 5))
+inspect(head(combined_rules, 5))
+```
+
+## 13. Аналіз результатів та формування висновків
+
+У межах індивідуального завдання було проведено аналіз першої половини набору даних Groceries за допомогою алгоритму Apriori. Основну увагу приділено виявленню закономірностей спільного придбання товарів та дослідженню стійкості асоціативних правил до зміни порогових значень.
+
+Для оцінювання результатів використано три основні показники:
+
+- **Support (підтримка)** — частка транзакцій, у яких одночасно зустрічаються товари, зазначені в правилі.
+- **Confidence (достовірність)** — імовірність придбання товару з правої частини правила за умови наявності товарів із лівої частини.
+- **Lift (підйом)** — показник сили асоціативного зв'язку. Значення lift більше 1 свідчить про позитивну залежність між товарами.
+
+Для узагальнення результатів сформовано таблиці характеристик досліджуваного набору, впливу support і confidence на кількість знайдених правил, а також порівняння різних стратегій відбору.
+
+```{r}
+#| label: final-analysis
+
+cat("ХАРАКТЕРИСТИКИ НАБОРУ ДАНИХ\n")
+print(variant_summary)
+
+cat("\nКІЛЬКІСТЬ ПРАВИЛ ЗА РІЗНИХ SUPPORT\n")
+print(variant_support_results)
+
+cat("\nКІЛЬКІСТЬ ПРАВИЛ ЗА РІЗНИХ CONFIDENCE\n")
+print(variant_confidence_results)
+
+cat("\nТРИ НАЙСИЛЬНІШІ АСОЦІАТИВНІ ПРАВИЛА\n")
+print(three_rules_table)
+
+cat("\nПОРІВНЯННЯ СТРАТЕГІЙ ВІДБОРУ\n")
+
+strategy_results <- data.frame(
+  Стратегія = c(
+    "За confidence",
+    "За lift",
+    "Комбінований відбір"
+  ),
+  Кількість_правил = c(
+    length(by_confidence),
+    length(by_lift),
+    length(combined_rules)
+  )
+)
+
+print(strategy_results)
+```
+
+### Основні результати дослідження
+
+1.  Аналіз першої половини набору Groceries дав змогу дослідити структуру споживчих кошиків, визначити найпопулярніші товари та встановити закономірності їх спільного придбання.
+
+2.  Застосування алгоритму Apriori дозволило сформувати асоціативні правила. Аналіз показників support, confidence та lift дав можливість оцінити частоту появи товарів, достовірність залежностей і силу зв'язку між ними.
+
+3.  Експеримент зі зміною support і confidence показав вплив порогових значень на кількість сформованих правил. Підвищення порогів робить відбір суворішим, що дає змогу зосередитися на більш поширених та достовірних залежностях.
+
+4.  Порівняння стратегій відбору за confidence, lift та сукупністю показників продемонструвало, що використання декількох критеріїв одночасно дозволяє комплексніше оцінювати асоціативні правила.
+
+5.  Перевірка надлишковості дала змогу оцінити, наскільки знайдені правила містять унікальну інформацію та чи не дублюють вони інші залежності.
+
+Отримані результати можуть бути використані для аналізу купівельної поведінки, визначення товарів, які часто купують разом, формування рекомендацій щодо розміщення продукції та планування маркетингових пропозицій.
+
+Таким чином, мету лабораторної роботи досягнуто. Було виконано пошук частих наборів товарів, побудовано асоціативні правила, досліджено вплив порогових параметрів та порівняно різні підходи до відбору правил.
