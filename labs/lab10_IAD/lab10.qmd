@@ -1,0 +1,878 @@
+---
+title: "Лабораторна робота № 10"
+subtitle: "Моделювання та прогнозування часових рядів засобами ARIMA"
+author: "Студентка групи КН-23-1 Варич Анна"
+date: "2026"
+lang: uk
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: false
+    embed-resources: true
+---
+
+# 1. Мета та завдання лабораторної роботи
+
+**Мета роботи:** ознайомитися з методами аналізу, моделювання та прогнозування часових рядів за допомогою моделей ARIMA, навчитися досліджувати тренд і сезонність, перевіряти стаціонарність, будувати моделі та оцінювати точність прогнозів.
+
+**Основні завдання:**
+
+1.  Провести попередній аналіз часового ряду.
+2.  Дослідити тренд і сезонність.
+3.  Виконати декомпозицію часового ряду.
+4.  Перевірити стаціонарність і виконати диференціювання.
+5.  Побудувати графіки ACF та PACF.
+6.  Побудувати та порівняти моделі ARIMA.
+7.  Провести діагностику залишків.
+8.  Побудувати прогноз на 12 кварталів.
+9.  Оцінити точність прогнозування за MAE, RMSE та MASE.
+10. Виконати індивідуальне завдання за варіантом 3.
+
+# 2. Підготовка середовища та завантаження даних
+
+У роботі використовуються стандартні функції мови R. Для отримання вихідних даних застосовується набір `aus_production` із пакета `tsibbledata`. Пакет `fpp3` не використовується.
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+# Перевірка наявності пакета з вихідними даними
+if (!requireNamespace("tsibbledata", quietly = TRUE)) {
+  stop("Пакет tsibbledata не встановлений. Його потрібно встановити один раз.")
+}
+
+# Завантаження набору даних без підключення fpp3
+data("aus_production", package = "tsibbledata")
+
+# Перетворення даних у звичайну таблицю
+aus_production <- as.data.frame(aus_production)
+
+# Налаштування
+set.seed(123)
+options(scipen = 999)
+
+# Перевірка даних
+head(aus_production)
+```
+
+Набір даних `aus_production` містить квартальні показники виробництва в Австралії, зокрема виробництво пива, цегли, цементу та газу.
+
+# 3. Попередній аналіз часового ряду Beer
+
+Для демонстрації методів аналізу спочатку розглядається часовий ряд виробництва пива (Beer).
+
+```{r}
+#| label: beer-data
+
+# Формування часового ряду
+beer_data <- aus_production$Beer
+beer_data <- beer_data[!is.na(beer_data)]
+
+beer <- ts(beer_data, start = c(1956, 1), frequency = 4)
+
+# Основна інформація
+length(beer)
+start(beer)
+end(beer)
+frequency(beer)
+summary(beer)
+```
+
+## 3.1. Графік часового ряду
+
+```{r}
+#| label: beer-plot
+
+plot(
+  beer,
+  main = "Квартальне виробництво пива в Австралії",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва",
+  col = "blue",
+  lwd = 2
+)
+grid()
+```
+
+Графік дозволяє оцінити загальну динаміку виробництва пива, наявність тенденції та періодичних сезонних коливань.
+
+## 3.2. Дослідження сезонності
+
+```{r}
+#| label: beer-seasonality
+
+boxplot(
+  as.numeric(beer) ~ cycle(beer),
+  names = c("I квартал", "II квартал", "III квартал", "IV квартал"),
+  main = "Сезонність виробництва пива",
+  xlab = "Квартал",
+  ylab = "Обсяг виробництва",
+  col = "lightblue"
+)
+```
+
+Сезонний графік дозволяє порівняти обсяги виробництва між кварталами та визначити наявність повторюваних сезонних коливань.
+
+# 4. Декомпозиція часового ряду
+
+Для розділення часового ряду на трендову, сезонну та випадкову складові використовується метод STL.
+
+```{r}
+#| label: beer-stl
+
+beer_stl <- stl(beer, s.window = "periodic")
+
+plot(
+  beer_stl,
+  main = "STL-декомпозиція виробництва пива"
+)
+```
+
+Декомпозиція дозволяє окремо дослідити довгострокову тенденцію, сезонні зміни та випадкові коливання.
+
+# 5. Стаціонарність та диференціювання
+
+Для побудови моделей ARIMA часовий ряд повинен бути стаціонарним. Для попереднього усунення тренду та сезонності застосовується диференціювання.
+
+## 5.1. Перше диференціювання
+
+```{r}
+#| label: beer-diff1
+
+beer_diff1 <- diff(beer, differences = 1)
+
+plot(
+  beer_diff1,
+  main = "Перше диференціювання часового ряду Beer",
+  xlab = "Рік",
+  ylab = "Різниця",
+  col = "darkgreen"
+)
+grid()
+```
+
+## 5.2. Сезонне диференціювання
+
+```{r}
+#| label: beer-diff-seasonal
+
+beer_diff4 <- diff(beer, lag = 4)
+
+plot(
+  beer_diff4,
+  main = "Сезонне диференціювання часового ряду Beer",
+  xlab = "Рік",
+  ylab = "Різниця",
+  col = "darkorange"
+)
+grid()
+```
+
+## 5.3. Комбіноване диференціювання
+
+```{r}
+#| label: beer-diff-combined
+
+beer_diff_combined <- diff(diff(beer, lag = 4), differences = 1)
+
+plot(
+  beer_diff_combined,
+  main = "Комбіноване диференціювання часового ряду Beer",
+  xlab = "Рік",
+  ylab = "Різниця",
+  col = "purple"
+)
+grid()
+```
+
+Порівняння отриманих графіків дозволяє оцінити, наскільки диференціювання зменшує трендові та сезонні коливання.
+
+# 6. Автокореляційний аналіз
+
+Для визначення структури залежностей між спостереженнями використовуються функції ACF та PACF.
+
+```{r}
+#| label: beer-acf-pacf
+
+par(mfrow = c(1, 2))
+
+acf(
+  beer,
+  main = "ACF початкового ряду"
+)
+
+pacf(
+  beer,
+  main = "PACF початкового ряду"
+)
+
+par(mfrow = c(1, 1))
+```
+
+Аналогічно досліджуються автокореляційні характеристики після диференціювання.
+
+```{r}
+#| label: beer-diff-acf
+
+par(mfrow = c(1, 2))
+
+acf(
+  beer_diff_combined,
+  main = "ACF диференційованого ряду"
+)
+
+pacf(
+  beer_diff_combined,
+  main = "PACF диференційованого ряду"
+)
+
+par(mfrow = c(1, 1))
+```
+
+ACF використовується для оцінювання автокореляції, а PACF — часткової автокореляції. Отримані графіки допомагають визначити можливі параметри моделей ARIMA.
+
+# 7. Поділ даних на навчальну та тестову вибірки
+
+Для оцінювання точності прогнозування останні 12 кварталів використовуються як тестова вибірка. Решта спостережень формують навчальну вибірку.
+
+```{r}
+#| label: beer-split
+
+h <- 12
+
+beer_train <- head(beer, length(beer) - h)
+beer_test <- tail(beer, h)
+
+length(beer_train)
+length(beer_test)
+
+plot(
+  beer_train,
+  main = "Навчальна вибірка Beer",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва",
+  col = "blue"
+)
+
+lines(beer_test, col = "red", lwd = 2)
+legend(
+  "topleft",
+  legend = c("Навчальна вибірка", "Тестова вибірка"),
+  col = c("blue", "red"),
+  lty = 1
+)
+```
+
+Навчальна вибірка використовується для побудови моделей, а тестова — для перевірки якості отриманих прогнозів.
+
+# 8. Побудова моделей ARIMA
+
+Для моделювання часового ряду будуються три моделі з різними параметрами ARIMA. Також використовуються методи наївного та сезонного наївного прогнозування.
+
+```{r}
+#| label: beer-models
+
+# Модель ARIMA(0,1,1)(0,1,1)[4]
+model_1 <- arima(
+  beer_train,
+  order = c(0, 1, 1),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+# Модель ARIMA(1,1,0)(0,1,1)[4]
+model_2 <- arima(
+  beer_train,
+  order = c(1, 1, 0),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+# Модель ARIMA(1,1,1)(0,1,1)[4]
+model_3 <- arima(
+  beer_train,
+  order = c(1, 1, 1),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+# Виведення результатів
+model_1
+model_2
+model_3
+```
+
+## 8.1. Порівняння моделей за AICc
+
+```{r}
+#| label: beer-aicc
+
+calculate_aicc <- function(model) {
+  k <- length(model$coef) + 1
+  n <- length(model$residuals)
+  aic <- AIC(model)
+
+  aic + (2 * k * (k + 1)) / (n - k - 1)
+}
+
+aicc_results <- data.frame(
+  Model = c("ARIMA(0,1,1)(0,1,1)[4]",
+            "ARIMA(1,1,0)(0,1,1)[4]",
+            "ARIMA(1,1,1)(0,1,1)[4]"),
+  AIC = c(AIC(model_1), AIC(model_2), AIC(model_3)),
+  AICc = c(
+    calculate_aicc(model_1),
+    calculate_aicc(model_2),
+    calculate_aicc(model_3)
+  )
+)
+
+aicc_results[order(aicc_results$AICc), ]
+```
+
+Модель із найменшим значенням AICc вважається кращою за цим критерієм серед розглянутих моделей.
+
+# 9. Діагностика залишків
+
+Для перевірки адекватності моделей аналізуються залишки та виконується тест Льюнга — Бокса.
+
+```{r}
+#| label: beer-residuals
+
+par(mfrow = c(2, 2))
+
+plot(
+  model_1$residuals,
+  main = "Залишки ARIMA",
+  ylab = "Значення",
+  col = "blue"
+)
+
+acf(
+  model_1$residuals,
+  main = "ACF залишків"
+)
+
+hist(
+  model_1$residuals,
+  main = "Розподіл залишків",
+  xlab = "Залишки",
+  col = "lightblue"
+)
+
+qqnorm(model_1$residuals)
+qqline(model_1$residuals, col = "red")
+
+par(mfrow = c(1, 1))
+
+Box.test(
+  model_1$residuals,
+  lag = 12,
+  type = "Ljung-Box",
+  fitdf = 2
+)
+```
+
+Нульова гіпотеза тесту Льюнга — Бокса полягає у відсутності автокореляції залишків. Значення p-value більше 0,05 свідчить про відсутність статистично значущої автокореляції на перевірених лагах.
+
+# 10. Прогнозування виробництва пива
+
+Для побудови прогнозу використовується модель ARIMA(0,1,1)(0,1,1)\[4\]. Горизонт прогнозування становить 12 кварталів.
+
+```{r}
+#| label: beer-forecast
+
+beer_prediction <- predict(model_1, n.ahead = h)
+
+beer_forecast <- as.numeric(beer_prediction$pred)
+beer_se <- as.numeric(beer_prediction$se)
+
+beer_lower80 <- beer_forecast - 1.282 * beer_se
+beer_upper80 <- beer_forecast + 1.282 * beer_se
+
+beer_lower95 <- beer_forecast - 1.96 * beer_se
+beer_upper95 <- beer_forecast + 1.96 * beer_se
+
+beer_forecast_table <- data.frame(
+  Quarter = seq_len(h),
+  Forecast = beer_forecast,
+  Lower80 = beer_lower80,
+  Upper80 = beer_upper80,
+  Lower95 = beer_lower95,
+  Upper95 = beer_upper95
+)
+
+beer_forecast_table
+```
+
+## 10.1. Графік прогнозу
+
+```{r}
+#| label: beer-forecast-plot
+
+plot(
+  beer,
+  xlim = c(start(beer)[1], end(beer)[1] + 3),
+  ylim = range(c(beer, beer_lower95, beer_upper95), na.rm = TRUE),
+  main = "Прогноз виробництва пива на 12 кварталів",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва",
+  col = "black"
+)
+
+future_time <- time(beer)[length(beer)] +
+  seq_len(h) / frequency(beer)
+
+polygon(
+  c(future_time, rev(future_time)),
+  c(beer_lower95, rev(beer_upper95)),
+  col = rgb(0.2, 0.4, 0.9, 0.15),
+  border = NA
+)
+
+polygon(
+  c(future_time, rev(future_time)),
+  c(beer_lower80, rev(beer_upper80)),
+  col = rgb(0.2, 0.4, 0.9, 0.25),
+  border = NA
+)
+
+lines(future_time, beer_forecast, col = "blue", lwd = 2)
+lines(beer, col = "black")
+
+legend(
+  "topleft",
+  legend = c("Фактичні дані", "Прогноз", "Інтервали прогнозу"),
+  col = c("black", "blue", "lightblue"),
+  lty = c(1, 1, NA),
+  pch = c(NA, NA, 15)
+)
+```
+
+# 11. Оцінювання точності прогнозу
+
+Для оцінювання прогнозів використовуються показники MAE, RMSE та MASE.
+
+```{r}
+#| label: beer-accuracy
+
+# Функція розрахунку метрик
+calculate_metrics <- function(actual, predicted, training) {
+
+  errors <- as.numeric(actual) - as.numeric(predicted)
+
+  scale_value <- mean(
+    abs(diff(training, lag = 4)),
+    na.rm = TRUE
+  )
+
+  data.frame(
+    MAE = mean(abs(errors)),
+    RMSE = sqrt(mean(errors^2)),
+    MASE = mean(abs(errors)) / scale_value
+  )
+}
+
+# Прогноз ARIMA
+accuracy_arima <- calculate_metrics(
+  beer_test,
+  beer_forecast,
+  beer_train
+)
+
+# Наївний прогноз
+naive_forecast <- rep(
+  tail(beer_train, 1),
+  h
+)
+
+accuracy_naive <- calculate_metrics(
+  beer_test,
+  naive_forecast,
+  beer_train
+)
+
+# Сезонний наївний прогноз
+seasonal_forecast <- rep(
+  tail(beer_train, 4),
+  length.out = h
+)
+
+accuracy_seasonal <- calculate_metrics(
+  beer_test,
+  seasonal_forecast,
+  beer_train
+)
+
+accuracy_results <- rbind(
+  cbind(Model = "ARIMA", accuracy_arima),
+  cbind(Model = "NAIVE", accuracy_naive),
+  cbind(Model = "SNAIVE", accuracy_seasonal)
+)
+
+accuracy_results
+```
+
+Найкращою за точністю вважається модель із найменшими значеннями MAE, RMSE та MASE.
+
+# 12. Індивідуальне завдання. Варіант 3 — Bricks
+
+Відповідно до індивідуального варіанта досліджується квартальний часовий ряд виробництва цегли (Bricks) в Австралії. Початок досліджуваного періоду — 1956 Q1.
+
+## 12.1. Формування та опис часового ряду
+
+```{r}
+#| label: bricks-data
+
+bricks_data <- aus_production$Bricks
+
+# Відбір даних починаючи з 1956 Q1
+bricks_data <- bricks_data[!is.na(bricks_data)]
+
+bricks <- ts(
+  bricks_data,
+  start = c(1956, 1),
+  frequency = 4
+)
+
+# Основні характеристики
+length(bricks)
+start(bricks)
+end(bricks)
+frequency(bricks)
+summary(bricks)
+```
+
+## 12.2. Графічний аналіз та сезонність
+
+```{r}
+#| label: bricks-plot
+
+plot(
+  bricks,
+  main = "Квартальне виробництво цегли в Австралії",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва",
+  col = "blue",
+  lwd = 2
+)
+grid()
+```
+
+```{r}
+#| label: bricks-seasonality
+
+boxplot(
+  as.numeric(bricks) ~ cycle(bricks),
+  names = c("I квартал", "II квартал", "III квартал", "IV квартал"),
+  main = "Сезонність виробництва цегли",
+  xlab = "Квартал",
+  ylab = "Обсяг виробництва",
+  col = "lightblue"
+)
+```
+
+## 12.3. Декомпозиція часового ряду
+
+```{r}
+#| label: bricks-stl
+
+bricks_stl <- stl(bricks, s.window = "periodic")
+
+plot(
+  bricks_stl,
+  main = "STL-декомпозиція виробництва цегли"
+)
+```
+
+## 12.4. Перевірка стаціонарності та диференціювання
+
+```{r}
+#| label: bricks-differencing
+
+bricks_diff1 <- diff(bricks)
+bricks_diff4 <- diff(bricks, lag = 4)
+bricks_diff_combined <- diff(diff(bricks, lag = 4))
+
+par(mfrow = c(3, 1))
+
+plot(bricks_diff1, main = "Перше диференціювання")
+plot(bricks_diff4, main = "Сезонне диференціювання")
+plot(bricks_diff_combined, main = "Комбіноване диференціювання")
+
+par(mfrow = c(1, 1))
+```
+
+Після диференціювання аналізується зміна середнього рівня та сезонних коливань. Це дозволяє визначити необхідні параметри d та D для моделей ARIMA.
+
+## 12.5. Аналіз ACF та PACF
+
+```{r}
+#| label: bricks-acf-pacf
+
+par(mfrow = c(2, 2))
+
+acf(bricks, main = "ACF початкового ряду")
+pacf(bricks, main = "PACF початкового ряду")
+
+acf(bricks_diff_combined, main = "ACF після диференціювання")
+pacf(bricks_diff_combined, main = "PACF після диференціювання")
+
+par(mfrow = c(1, 1))
+```
+
+## 12.6. Поділ на навчальну та тестову вибірки
+
+```{r}
+#| label: bricks-split
+
+h_bricks <- 12
+
+bricks_train <- head(bricks, length(bricks) - h_bricks)
+bricks_test <- tail(bricks, h_bricks)
+
+length(bricks_train)
+length(bricks_test)
+
+plot(
+  bricks_train,
+  main = "Навчальна та тестова вибірки Bricks",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва",
+  col = "blue"
+)
+
+lines(bricks_test, col = "red", lwd = 2)
+```
+
+Останні 12 кварталів залишаються для перевірки точності прогнозу. Моделі навчаються виключно на навчальній вибірці.
+
+## 12.7. Побудова моделей ARIMA
+
+```{r}
+#| label: bricks-models
+
+bricks_model_1 <- arima(
+  bricks_train,
+  order = c(0, 1, 1),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+bricks_model_2 <- arima(
+  bricks_train,
+  order = c(1, 1, 0),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+bricks_model_3 <- arima(
+  bricks_train,
+  order = c(1, 1, 1),
+  seasonal = list(order = c(0, 1, 1), period = 4)
+)
+
+bricks_model_1
+bricks_model_2
+bricks_model_3
+```
+
+## 12.8. Порівняння моделей за AICc
+
+```{r}
+#| label: bricks-aicc
+
+bricks_aicc <- data.frame(
+  Model = c(
+    "ARIMA(0,1,1)(0,1,1)[4]",
+    "ARIMA(1,1,0)(0,1,1)[4]",
+    "ARIMA(1,1,1)(0,1,1)[4]"
+  ),
+  AIC = c(
+    AIC(bricks_model_1),
+    AIC(bricks_model_2),
+    AIC(bricks_model_3)
+  ),
+  AICc = c(
+    calculate_aicc(bricks_model_1),
+    calculate_aicc(bricks_model_2),
+    calculate_aicc(bricks_model_3)
+  )
+)
+
+bricks_aicc <- bricks_aicc[order(bricks_aicc$AICc), ]
+
+bricks_aicc
+```
+
+## 12.9. Діагностика залишків
+
+```{r}
+#| label: bricks-residuals
+
+par(mfrow = c(2, 2))
+
+plot(
+  bricks_model_1$residuals,
+  main = "Залишки моделі ARIMA",
+  ylab = "Значення"
+)
+
+acf(
+  bricks_model_1$residuals,
+  main = "ACF залишків"
+)
+
+hist(
+  bricks_model_1$residuals,
+  main = "Розподіл залишків",
+  xlab = "Залишки",
+  col = "lightblue"
+)
+
+qqnorm(bricks_model_1$residuals)
+qqline(bricks_model_1$residuals, col = "red")
+
+par(mfrow = c(1, 1))
+
+Box.test(
+  bricks_model_1$residuals,
+  lag = 12,
+  type = "Ljung-Box",
+  fitdf = 2
+)
+```
+
+## 12.10. Прогнозування на 12 кварталів
+
+```{r}
+#| label: bricks-forecast
+
+bricks_prediction <- predict(
+  bricks_model_1,
+  n.ahead = h_bricks
+)
+
+bricks_forecast <- as.numeric(bricks_prediction$pred)
+bricks_se <- as.numeric(bricks_prediction$se)
+
+bricks_forecast_table <- data.frame(
+  Quarter = seq_len(h_bricks),
+  Forecast = bricks_forecast,
+  Lower80 = bricks_forecast - 1.282 * bricks_se,
+  Upper80 = bricks_forecast + 1.282 * bricks_se,
+  Lower95 = bricks_forecast - 1.96 * bricks_se,
+  Upper95 = bricks_forecast + 1.96 * bricks_se
+)
+
+bricks_forecast_table
+```
+
+## 12.11. Графік прогнозу
+
+```{r}
+#| label: bricks-forecast-plot
+
+future_bricks_time <- time(bricks)[length(bricks)] +
+  seq_len(h_bricks) / frequency(bricks)
+
+plot(
+  bricks,
+  xlim = c(start(bricks)[1], end(bricks)[1] + 3),
+  ylim = range(
+    c(
+      bricks,
+      bricks_forecast_table$Lower95,
+      bricks_forecast_table$Upper95
+    ),
+    na.rm = TRUE
+  ),
+  main = "Прогноз виробництва цегли на 12 кварталів",
+  xlab = "Рік",
+  ylab = "Обсяг виробництва"
+)
+
+polygon(
+  c(future_bricks_time, rev(future_bricks_time)),
+  c(
+    bricks_forecast_table$Lower95,
+    rev(bricks_forecast_table$Upper95)
+  ),
+  col = rgb(0.2, 0.4, 0.9, 0.15),
+  border = NA
+)
+
+polygon(
+  c(future_bricks_time, rev(future_bricks_time)),
+  c(
+    bricks_forecast_table$Lower80,
+    rev(bricks_forecast_table$Upper80)
+  ),
+  col = rgb(0.2, 0.4, 0.9, 0.25),
+  border = NA
+)
+
+lines(future_bricks_time, bricks_forecast, col = "blue", lwd = 2)
+lines(bricks, col = "black")
+```
+
+## 12.12. Оцінювання точності прогнозу
+
+```{r}
+#| label: bricks-accuracy
+
+bricks_accuracy_arima <- calculate_metrics(
+  bricks_test,
+  bricks_forecast,
+  bricks_train
+)
+
+bricks_naive_forecast <- rep(
+  tail(bricks_train, 1),
+  h_bricks
+)
+
+bricks_accuracy_naive <- calculate_metrics(
+  bricks_test,
+  bricks_naive_forecast,
+  bricks_train
+)
+
+bricks_seasonal_forecast <- rep(
+  tail(bricks_train, 4),
+  length.out = h_bricks
+)
+
+bricks_accuracy_seasonal <- calculate_metrics(
+  bricks_test,
+  bricks_seasonal_forecast,
+  bricks_train
+)
+
+bricks_accuracy <- rbind(
+  cbind(Model = "ARIMA", bricks_accuracy_arima),
+  cbind(Model = "NAIVE", bricks_accuracy_naive),
+  cbind(Model = "SNAIVE", bricks_accuracy_seasonal)
+)
+
+bricks_accuracy <- bricks_accuracy[
+  order(bricks_accuracy$RMSE),
+]
+
+bricks_accuracy
+```
+
+# 13. Висновки
+
+У ході виконання лабораторної роботи було розглянуто методи аналізу, моделювання та прогнозування квартальних часових рядів за допомогою моделей ARIMA.
+
+Під час виконання індивідуального завдання було досліджено часовий ряд виробництва цегли в Австралії, починаючи з першого кварталу 1956 року.
+
+Було виконано попередній аналіз даних, побудовано графіки часового ряду, досліджено сезонність і проведено STL-декомпозицію.
+
+Для підготовки даних до моделювання виконано звичайне, сезонне та комбіноване диференціювання. За допомогою графіків ACF та PACF досліджено автокореляційні залежності.
+
+Побудовано три моделі ARIMA з різними параметрами. Для їх порівняння використано інформаційний критерій AICc. Додатково виконано діагностику залишків за допомогою графічного аналізу та тесту Льюнга — Бокса.
+
+На завершальному етапі побудовано прогноз виробництва цегли на 12 кварталів та розраховано показники MAE, RMSE і MASE для порівняння моделей ARIMA, NAIVE та SNAIVE.
+
+Отримані результати дозволяють оцінити можливості моделей ARIMA для аналізу квартальних часових рядів та прогнозування майбутніх значень.
