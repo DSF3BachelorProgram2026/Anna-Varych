@@ -1,0 +1,472 @@
+---
+---
+title: "Лабораторна робота № 8. Оцінювання та оптимізація моделей машинного навчання"
+subtitle: "Індивідуальне завдання"
+author: "Анна Варич"
+date: today
+date-format: long
+lang: uk
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## Мета роботи
+
+Метою лабораторної роботи є дослідження якості моделей машинного навчання, проведення перехресної перевірки, налаштування гіперпараметрів та оцінювання моделей на незалежній тестовій вибірці.
+
+## 1. Підготовка середовища
+
+Для виконання роботи використовуються бібліотеки `tidymodels` і `tidyverse`, а також набір даних `iris`.
+
+```{r}
+#| label: setup
+
+library(tidymodels)
+library(tidyverse)
+
+set.seed(12345)
+options(digits = 4)
+```
+
+## 2. Підготовка та аналіз даних
+
+Для дослідження використовується набір `iris`. Відберемо два види квіток: `virginica` та `versicolor`. Цільовою змінною буде `class`, а предикторами — чотири числові характеристики квіток.
+
+```{r}
+#| label: data-preparation
+
+iris_data <- iris |>
+  as_tibble() |>
+  filter(Species %in% c("virginica", "versicolor")) |>
+  transmute(
+    Sepal.Length,
+    Sepal.Width,
+    Petal.Length,
+    Petal.Width,
+    class = factor(
+      as.character(Species),
+      levels = c("virginica", "versicolor")
+    )
+  )
+
+glimpse(iris_data)
+count(iris_data, class)
+```
+
+## 3. Розбиття даних
+
+Розділимо набір даних на навчальну (80%) та тестову (20%) вибірки зі збереженням пропорцій класів. Для оцінювання моделей використаємо п'ятиблокову перехресну перевірку з трьома повтореннями.
+
+```{r}
+#| label: data-split
+
+set.seed(12345)
+
+data_split <- initial_split(
+  iris_data,
+  prop = 0.8,
+  strata = class
+)
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+set.seed(12345)
+
+folds <- vfold_cv(
+  train_data,
+  v = 5,
+  repeats = 3,
+  strata = class
+)
+
+nrow(train_data)
+nrow(test_data)
+nrow(folds)
+```
+
+## 4. Побудова базової моделі
+
+Спочатку побудуємо логістичну регресію. Вона використовуватиметься як базова модель для порівняння з деревом рішень. Для оцінювання застосуємо Accuracy, Sensitivity, Specificity та ROC AUC.
+
+```{r}
+#| label: logistic-model
+
+logit_recipe <- recipe(class ~ ., data = train_data) |>
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+logit_spec <- logistic_reg() |>
+  set_engine("glm") |>
+  set_mode("classification")
+
+logit_wf <- workflow() |>
+  add_recipe(logit_recipe) |>
+  add_model(logit_spec)
+
+class_metrics <- metric_set(
+  yardstick::accuracy,
+  yardstick::sens,
+  yardstick::spec,
+  yardstick::roc_auc
+)
+
+set.seed(12345)
+
+logit_rs <- fit_resamples(
+  logit_wf,
+  resamples = folds,
+  metrics = class_metrics,
+  control = control_resamples(save_pred = TRUE)
+)
+
+logit_cv <- collect_metrics(logit_rs)
+
+logit_cv
+```
+
+## 5. Побудова та налаштування дерева рішень
+
+Побудуємо модель дерева рішень із налаштовуваними параметрами глибини дерева та складності обрізання. Для вибору найкращої конфігурації використаємо перехресну перевірку.
+
+```{r}
+#| label: tree-model
+
+tree_spec <- decision_tree(
+  tree_depth = tune(),
+  cost_complexity = tune(),
+  min_n = 5
+) |>
+  set_engine("rpart") |>
+  set_mode("classification")
+
+tree_wf <- workflow() |>
+  add_recipe(
+    recipe(class ~ ., data = train_data) |>
+      step_zv(all_predictors())
+  ) |>
+  add_model(tree_spec)
+
+tree_grid <- tidyr::crossing(
+  tree_depth = c(1L, 2L, 3L, 4L, 5L),
+  cost_complexity = c(0.0001, 0.001, 0.01, 0.05)
+)
+
+tree_grid
+```
+
+## 6. Перехресна перевірка та оптимізація
+
+Виконаємо налаштування гіперпараметрів дерева рішень. Найкращу конфігурацію оберемо за середнім значенням ROC AUC.
+
+```{r}
+#| label: tree-tuning
+
+set.seed(12345)
+
+tree_tuned <- tune_grid(
+  tree_wf,
+  resamples = folds,
+  grid = tree_grid,
+  metrics = class_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+
+tree_results <- collect_metrics(tree_tuned)
+
+tree_ranking <- tree_results |>
+  filter(.metric == "roc_auc") |>
+  arrange(desc(mean))
+
+tree_ranking |>
+  select(tree_depth, cost_complexity, mean, std_err) |>
+  head(10)
+
+best_tree <- select_best(tree_tuned, metric = "roc_auc")
+
+best_tree
+```
+
+## 7. Порівняння моделей
+
+Порівняємо результати логістичної регресії та налаштованого дерева рішень. Для вибору остаточної моделі використаємо середню ROC AUC. Якщо різниця між моделями менша за 0,01, перевагу надамо простішій логістичній регресії.
+
+```{r}
+#| label: model-comparison
+
+logit_auc <- logit_cv |>
+  filter(.metric == "roc_auc") |>
+  pull(mean)
+
+logit_acc <- logit_cv |>
+  filter(.metric == "accuracy") |>
+  pull(mean)
+
+best_auc <- tree_ranking$mean[[1]]
+
+best_depth <- best_tree$tree_depth[[1]]
+best_cp <- best_tree$cost_complexity[[1]]
+
+tree_acc <- tree_results |>
+  filter(
+    .metric == "accuracy",
+    tree_depth == best_depth,
+    cost_complexity == best_cp
+  ) |>
+  pull(mean)
+
+cv_comparison <- tibble(
+  model = c("Логістична регресія", "Дерево рішень"),
+  cv_accuracy = c(logit_acc, tree_acc),
+  cv_roc_auc = c(logit_auc, best_auc)
+)
+
+cv_comparison
+
+selected_name <- if (best_auc > logit_auc + 0.01) {
+  "Дерево рішень"
+} else {
+  "Логістична регресія"
+}
+
+selected_name
+```
+
+## 8. Оцінювання на тестовій вибірці
+
+Навчимо обидві моделі на всій навчальній вибірці та оцінимо їх на незалежних тестових даних. Результати тестування не використовуватимемо для повторного вибору моделі.
+
+```{r}
+#| label: test-evaluation
+
+final_tree_wf <- finalize_workflow(tree_wf, best_tree)
+
+logit_fit <- fit(logit_wf, data = train_data)
+tree_fit <- fit(final_tree_wf, data = train_data)
+
+predict_test <- function(fitted_model, data) {
+  bind_cols(
+    data |> select(class),
+    predict(fitted_model, new_data = data, type = "class"),
+    predict(fitted_model, new_data = data, type = "prob")
+  )
+}
+
+logit_pred <- predict_test(logit_fit, test_data)
+tree_pred <- predict_test(tree_fit, test_data)
+
+metric_values <- function(pred) {
+  tibble(
+    accuracy = yardstick::accuracy_vec(
+      pred$class, pred$.pred_class
+    ),
+    sensitivity = yardstick::sens_vec(
+      pred$class, pred$.pred_class, event_level = "first"
+    ),
+    specificity = yardstick::spec_vec(
+      pred$class, pred$.pred_class, event_level = "first"
+    ),
+    roc_auc = yardstick::roc_auc_vec(
+      pred$class, pred$.pred_virginica, event_level = "first"
+    )
+  )
+}
+
+test_comparison <- bind_rows(
+  metric_values(logit_pred) |> mutate(model = "Логістична регресія"),
+  metric_values(tree_pred) |> mutate(model = "Дерево рішень")
+) |>
+  select(model, everything())
+
+test_comparison
+```
+
+## 9. Матриця помилок
+
+Побудуємо матрицю помилок для обраної моделі, щоб визначити кількість правильних і неправильних класифікацій кожного класу.
+
+```{r}
+#| label: confusion-matrix
+
+selected_fit <- if (selected_name == "Дерево рішень") {
+  tree_fit
+} else {
+  logit_fit
+}
+
+selected_pred <- if (selected_name == "Дерево рішень") {
+  tree_pred
+} else {
+  logit_pred
+}
+
+conf_mat(
+  selected_pred,
+  truth = class,
+  estimate = .pred_class
+)
+```
+
+## 10. Дослідження порога класифікації
+
+Дослідимо, як зміна порога класифікації впливає на точність, чутливість і специфічність обраної моделі. Розглянемо три значення порога: 0,3; 0,5 та 0,7.
+
+```{r}
+#| label: threshold-analysis
+
+threshold_results <- purrr::map_dfr(
+  c(0.3, 0.5, 0.7),
+  function(threshold) {
+    pred_class <- factor(
+      if_else(
+        selected_pred$.pred_virginica >= threshold,
+        "virginica",
+        "versicolor"
+      ),
+      levels = levels(selected_pred$class)
+    )
+    
+    tibble(
+      threshold = threshold,
+      accuracy = yardstick::accuracy_vec(
+        selected_pred$class, pred_class
+      ),
+      sensitivity = yardstick::sens_vec(
+        selected_pred$class, pred_class,
+        event_level = "first"
+      ),
+      specificity = yardstick::spec_vec(
+        selected_pred$class, pred_class,
+        event_level = "first"
+      )
+    )
+  }
+)
+
+threshold_results
+```
+
+## 11. Збереження та відновлення моделі
+
+Збережемо навчену модель у форматі RDS, відновимо її та перевіримо ідентичність прогнозів.
+
+```{r}
+#| label: save-restore
+
+artifact_dir <- "artifacts_lab8"
+dir.create(artifact_dir, showWarnings = FALSE)
+
+model_path <- file.path(artifact_dir, "selected_model.rds")
+
+saveRDS(selected_fit, model_path)
+
+restored_fit <- readRDS(model_path)
+
+pred_before <- predict(selected_fit, new_data = test_data, type = "prob")
+pred_after <- predict(restored_fit, new_data = test_data, type = "prob")
+
+identical_predictions <- isTRUE(
+  all.equal(pred_before, pred_after, tolerance = 0)
+)
+
+identical_predictions
+```
+
+## 12. Самостійна робота
+
+У самостійному дослідженні змінено кількість складок перехресної перевірки з 5 на 10. Інші умови експерименту залишено незмінними. Мета — дослідити вплив кількості складок на оцінювання моделей.
+
+```{r}
+#| label: independent-experiment
+
+set.seed(12345)
+
+folds10 <- vfold_cv(
+  train_data,
+  v = 10,
+  strata = class
+)
+
+logit_cv10 <- fit_resamples(
+  logit_wf,
+  resamples = folds10,
+  metrics = class_metrics
+) |>
+  collect_metrics()
+
+tree_tuned10 <- tune_grid(
+  tree_wf,
+  resamples = folds10,
+  grid = tree_grid,
+  metrics = class_metrics
+)
+
+best_tree10 <- select_best(tree_tuned10, metric = "roc_auc")
+tree_cv10 <- collect_metrics(tree_tuned10)
+
+logit_auc10 <- logit_cv10 |>
+  filter(.metric == "roc_auc") |>
+  pull(mean)
+
+tree_auc10 <- tree_cv10 |>
+  filter(.metric == "roc_auc") |>
+  summarise(best = max(mean)) |>
+  pull(best)
+
+selected_name10 <- if (tree_auc10 > logit_auc10 + 0.01) {
+  "Дерево рішень"
+} else {
+  "Логістична регресія"
+}
+
+final_wf10 <- finalize_workflow(tree_wf, best_tree10)
+
+selected_wf10 <- if (selected_name10 == "Дерево рішень") {
+  final_wf10
+} else {
+  logit_wf
+}
+
+selected_fit10 <- fit(selected_wf10, data = train_data)
+
+pred10 <- predict_test(selected_fit10, test_data)
+
+metric_values(pred10)
+conf_mat(pred10, truth = class, estimate = .pred_class)
+
+saveRDS(selected_fit10, file.path(artifact_dir, "model_10fold.rds"))
+
+restored10 <- readRDS(file.path(artifact_dir, "model_10fold.rds"))
+
+isTRUE(all.equal(
+  predict(selected_fit10, new_data = test_data, type = "prob"),
+  predict(restored10, new_data = test_data, type = "prob"),
+  tolerance = 0
+))
+
+best_tree10
+selected_name10
+```
+
+## 13. Висновки
+
+У ході лабораторної роботи було досліджено методи оцінювання та оптимізації моделей машинного навчання на наборі даних `iris`.
+
+Було побудовано логістичну регресію та дерево рішень. За допомогою п'ятикратної перехресної перевірки з трьома повтореннями виконано порівняння моделей і налаштування гіперпараметрів дерева рішень.
+
+На основі середнього значення ROC AUC обрано остаточну модель, яку додатково оцінено на незалежній тестовій вибірці. Для аналізу результатів побудовано матрицю помилок і досліджено вплив різних порогів класифікації на якість прогнозування.
+
+У самостійній роботі проведено додатковий експеримент із використанням десятикратної перехресної перевірки. Це дало змогу порівняти результати оцінювання за різної кількості складок.
+
+Навчені моделі збережено у форматі RDS та перевірено можливість їх відновлення. Перевірка підтвердила збіг прогнозів після повторного завантаження.
+
+Отже, мету лабораторної роботи досягнуто: виконано порівняння моделей, оптимізацію гіперпараметрів, незалежне тестування та дослідження відтворюваності результатів.
